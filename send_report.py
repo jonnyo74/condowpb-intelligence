@@ -7,12 +7,16 @@ from dotenv import load_dotenv
 from search_console import get_service, get_top_pages, get_top_queries
 from site_health import get_sitemap_urls, check_broken_links, check_meta_descriptions
 from news_monitor import get_recent_news
+from content_ideas import format_content_section
+from market_pulse import get_market_pulse
+from rank_tracker import get_rank_tracker
+from report_builder import get_monthly_report
 
 load_dotenv()
 
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
-RECIPIENT = os.getenv("REPORT_RECIPIENT")
+RECIPIENTS = [r.strip() for r in os.getenv("REPORT_RECIPIENT", "").split(",")]
 
 
 def clean_url(url):
@@ -34,16 +38,13 @@ def build_report():
     queries = get_top_queries(service, days=28)
     pages_prev = get_top_pages(service, days=56)
 
-    # Build previous period position lookup
     prev_positions = {r["keys"][0]: r["position"] for r in pages_prev}
 
-    # Opportunities: impressions >= 20, position 11-30, clicks = 0
     opportunities = [
         r for r in pages
         if r["impressions"] >= 20 and r["clicks"] == 0 and 10 < r["position"] <= 35
     ]
 
-    # Wins: improved position by 3+ vs previous period
     wins = []
     for r in pages:
         url = r["keys"][0]
@@ -87,25 +88,25 @@ def build_report():
     for r in queries[:15]:
         lines.append(f"  {r['clicks']:3.0f} clicks  {r['impressions']:5.0f} impr  pos {r['position']:5.1f}  {r['keys'][0]}")
 
+    lines.append("")
+    lines.append(format_content_section(pages, queries))
+
     # --- SITE HEALTH ---
     print("Checking site health...")
     try:
         urls = get_sitemap_urls()
         broken = check_broken_links(urls)
         missing_meta = check_meta_descriptions(urls)
-
         lines.append("")
         lines.append("=" * 55)
         lines.append(f"SITE HEALTH — {len(urls)} pages in sitemap")
         lines.append("=" * 55)
-
         if broken:
             lines.append(f"  BROKEN LINKS ({len(broken)} found):")
             for url, code in broken[:10]:
                 lines.append(f"    {code}  {url}")
         else:
             lines.append("  No broken links found.")
-
         if missing_meta:
             lines.append(f"\n  MISSING META DESCRIPTIONS ({len(missing_meta)} found):")
             for url in missing_meta[:10]:
@@ -132,6 +133,32 @@ def build_report():
     except Exception as e:
         lines.append(f"\n  News fetch failed: {e}")
 
+    # --- MARKET PULSE ---
+    print("Pulling market pulse...")
+    try:
+        lines.append("")
+        lines.append(get_market_pulse())
+    except Exception as e:
+        lines.append(f"\n  Market pulse failed: {e}")
+
+    # --- RANK TRACKER ---
+    print("Running rank tracker...")
+    try:
+        lines.append("")
+        lines.append(get_rank_tracker())
+    except Exception as e:
+        lines.append(f"\n  Rank tracker failed: {e}")
+
+    # --- MONTHLY REPORT (1st of month only) ---
+    print("Checking monthly report...")
+    try:
+        monthly = get_monthly_report()
+        if monthly:
+            lines.append("")
+            lines.append(monthly)
+    except Exception as e:
+        lines.append(f"\n  Monthly report failed: {e}")
+
     lines.append("")
     lines.append("-" * 55)
     lines.append("CondoWPB Intelligence System")
@@ -144,15 +171,16 @@ def send_report():
 
     msg = MIMEMultipart()
     msg["From"] = GMAIL_USER
-    msg["To"] = RECIPIENT
+    msg["To"] = ", ".join(RECIPIENTS)
     msg["Subject"] = f"CondoWPB Intelligence Report — {date.today().strftime('%B %d, %Y')}"
     msg.attach(MIMEText(body, "plain"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-        server.send_message(msg)
+        for recipient in RECIPIENTS:
+            server.sendmail(GMAIL_USER, recipient, msg.as_string())
 
-    print(f"Report sent to {RECIPIENT}")
+    print(f"Report sent to: {', '.join(RECIPIENTS)}")
 
 
 if __name__ == "__main__":
